@@ -1,7 +1,7 @@
 # 消息队列实战指南 - Docsify 自动化脚本
 # 使用方法: make [target]
 
-.PHONY: help install init serve build clean status update-sidebar quick-start
+.PHONY: help install init serve build clean status update-sidebar quick-start deploy
 
 # 默认目标
 .DEFAULT_GOAL := help
@@ -74,3 +74,8 @@ quick-start: ## 一键启动 (检查安装 + 初始化 + 更新导航 + 启动�
 	@make init
 	@make update-sidebar
 	@make serve
+
+deploy: ## 部署到GitHub Pages
+	@echo "🚀 部署到GitHub Pages..."
+	@chmod +x deploy.sh
+	@./deploy.sh
