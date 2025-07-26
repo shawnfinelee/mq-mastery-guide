@@ -65,64 +65,42 @@ graph TB
 
 ### 消息队列的基本工作原理
 
-```pseudocode
-// 生产者发送消息
-producer = createProducer()
-message = createMessage("用户下单", {orderId: 12345, userId: 789})
-producer.send(message)
+```java
+// 生产者：发送订单消息
+producer.send("order.created", {orderId: 12345, userId: 789});
 
-// 消息队列存储消息
-queue.store(message)
-
-// 消费者接收消息
-consumer = createConsumer()
-while (true) {
-    message = consumer.receive()
-    if (message != null) {
-        processOrder(message.data)
-        consumer.acknowledge(message)  // 确认处理完成
-    }
-}
+// 消费者：处理订单消息  
+message = consumer.receive();
+processOrder(message.data);
+consumer.ack(message);  // 确认处理完成
+```
 ```
 
 ### 为什么需要消息队列？
 
 #### 问题1：系统耦合度高
 **传统做法：**
-```pseudocode
+```java
 function createOrder(orderData) {
-    // 1. 创建订单
-    order = saveOrder(orderData)
-    
-    // 2. 扣减库存 - 如果库存服务故障，整个流程中断
-    updateInventory(order.productId, order.quantity)
-    
-    // 3. 发送邮件 - 如果邮件服务慢，用户等待时间长
-    sendEmail(order.userEmail, "订单确认邮件")
-    
-    // 4. 记录日志
-    writeLog(order)
-    
-    return order
+    order = saveOrder(orderData);
+    updateInventory(order.productId, order.quantity);  // 故障影响整个流程
+    sendEmail(order.userEmail, "订单确认邮件");      // 邮件慢，用户等待
+    writeLog(order);
+    return order;
 }
 ```
 
 **引入MQ后：**
-```pseudocode
+```java
 function createOrder(orderData) {
-    // 1. 创建订单
-    order = saveOrder(orderData)
-    
-    // 2. 发送消息到队列，立即返回
-    messageQueue.send("order.created", order)
-    
-    return order  // 用户立即得到响应
+    order = saveOrder(orderData);
+    messageQueue.send("order.created", order);  // 异步处理
+    return order;  // 用户立即响应
 }
 
-// 其他服务异步处理
-inventoryService.subscribe("order.created", updateInventory)
-emailService.subscribe("order.created", sendEmail)
-logService.subscribe("order.created", writeLog)
+// 各服务独立订阅
+inventoryService.subscribe("order.created", this::updateInventory);
+emailService.subscribe("order.created", this::sendEmail);
 ```
 
 #### 问题2：系统性能瓶颈
@@ -183,59 +161,40 @@ graph TB
 
 #### 实战案例：电商订单系统解耦
 
-**解耦前的代码：**
-```pseudocode
+**解耦前：紧耦合设计**
+```java
 class OrderService {
-    function createOrder(orderData) {
-        try {
-            // 创建订单
-            order = this.saveOrder(orderData)
-            
-            // 直接调用多个服务 - 紧耦合
-            inventoryService.reduceStock(order.items)
-            paymentService.createPayment(order.amount)
-            emailService.sendOrderConfirmation(order.userEmail)
-            logService.recordOrderEvent(order.id, "CREATED")
-            
-            return success(order)
-        } catch (exception) {
-            // 任何一个服务失败，整个订单创建失败
-            return error("订单创建失败: " + exception.message)
-        }
+    public Order createOrder(OrderData data) {
+        order = saveOrder(data);
+        
+        // 直接调用多个服务 - 任何一个失败都影响整体
+        inventoryService.reduceStock(order.items);
+        paymentService.createPayment(order.amount);
+        emailService.sendConfirmation(order.userEmail);
+        
+        return order;
     }
 }
 ```
 
-**解耦后的代码：**
-```pseudocode
+**解耦后：事件驱动设计**
+```java
 class OrderService {
-    function createOrder(orderData) {
-        // 1. 只关心核心业务逻辑
-        order = this.saveOrder(orderData)
+    public Order createOrder(OrderData data) {
+        order = saveOrder(data);  // 核心业务逻辑
         
-        // 2. 发布事件，不关心谁会处理
-        eventBus.publish("order.created", {
-            orderId: order.id,
-            userId: order.userId,
-            items: order.items,
-            amount: order.amount,
-            userEmail: order.userEmail
-        })
+        // 发布事件，各服务独立处理
+        eventBus.publish("order.created", order);
         
-        return success(order)  // 立即返回，用户体验好
+        return order;  // 立即返回
     }
 }
 
-// 各个服务独立订阅事件
+// 各服务独立订阅
+@EventListener("order.created")
 class InventoryService {
-    function handleOrderCreated(event) {
-        this.reduceStock(event.items)
-    }
-}
-
-class PaymentService {
-    function handleOrderCreated(event) {
-        this.createPayment(event.amount)
+    public void handleOrderCreated(Order order) {
+        reduceStock(order.items);
     }
 }
 ```
@@ -296,55 +255,35 @@ sequenceDiagram
 
 #### 实战案例：用户注册流程优化
 
-**优化前：**
-```pseudocode
+**优化前：同步处理（总耗时500ms）**
+```java
 function registerUser(userInfo) {
-    startTime = getCurrentTime()
-    
-    // 1. 保存用户信息 (50ms)
-    user = saveUser(userInfo)
-    
-    // 2. 发送邮箱验证邮件 (200ms) - 慢！
-    sendVerificationEmail(user.email)
-    
-    // 3. 发送欢迎短信 (150ms) - 慢！
-    sendWelcomeSMS(user.phone)
-    
-    // 4. 创建用户积分账户 (100ms) - 慢！
-    createPointsAccount(user.id)
-    
-    endTime = getCurrentTime()
-    // 总耗时：500ms - 用户等得不耐烦了！
-    
-    return success(user)
+    user = saveUser(userInfo);              // 50ms
+    sendVerificationEmail(user.email);      // 200ms - 慢！
+    sendWelcomeSMS(user.phone);            // 150ms - 慢！
+    createPointsAccount(user.id);          // 100ms - 慢！
+    return user;
 }
 ```
 
-**优化后：**
-```pseudocode
+**优化后：异步处理（总耗时55ms）**
+```java
 function registerUser(userInfo) {
-    startTime = getCurrentTime()
+    user = saveUser(userInfo);             // 50ms
     
-    // 1. 保存用户信息 (50ms)
-    user = saveUser(userInfo)
-    
-    // 2. 异步发布用户注册事件 (5ms)
+    // 异步发布事件 (5ms)
     messageQueue.publish("user.registered", {
         userId: user.id,
         email: user.email,
         phone: user.phone
-    })
+    });
     
-    endTime = getCurrentTime()
-    // 总耗时：55ms - 用户秒收到响应！
-    
-    return success(user)  // 用户立即看到注册成功
+    return user;  // 用户立即看到结果
 }
 
-// 后台异步处理各种任务
-emailService.subscribe("user.registered", sendVerificationEmail)
-smsService.subscribe("user.registered", sendWelcomeSMS)  
-pointsService.subscribe("user.registered", createPointsAccount)
+// 后台异步处理
+emailService.subscribe("user.registered", this::sendEmail);
+smsService.subscribe("user.registered", this::sendSMS);
 ```
 
 ### 🏔️ 削峰：化解流量洪峰的利器
@@ -386,37 +325,31 @@ graph TB
 
 #### 削峰策略详解
 
-**1. 队列缓冲策略**
-```pseudocode
-// 配置队列容量和处理速度
-queueConfig = {
-    maxSize: 100000,        // 队列最大容量
-    processRate: 5000,      // 每秒处理5000条消息
-    overflowStrategy: "reject"  // 超出容量时拒绝新消息
-}
+**队列缓冲策略**
+```java
+// 配置队列参数
+QueueConfig config = new QueueConfig()
+    .maxSize(100000)           // 最大容量
+    .processRate(5000)         // 每秒处理5000条
+    .overflowStrategy(REJECT); // 超量拒绝
 
-// 生产者快速写入队列
-producer.send(message)  // 2ms 内完成
+// 生产者快速写入
+producer.send(message);  // 2ms内完成
 
-// 消费者按照固定速率处理
-consumer.processWithRateLimit(5000)  // 每秒最多处理5000条
+// 消费者限速处理
+consumer.processWithRateLimit(5000);
 ```
 
-**2. 分级处理策略**
-```pseudocode
-// 根据消息重要性分队列
-enum MessagePriority {
-    CRITICAL,   // 核心业务，立即处理
-    HIGH,       // 重要业务，优先处理  
-    NORMAL,     // 普通业务，正常处理
-    LOW         // 次要业务，延后处理
-}
+**分级处理策略**
+```java
+// 按优先级分队列
+enum Priority { CRITICAL, HIGH, NORMAL, LOW }
 
-// 不同队列不同处理速度
-criticalQueue.processRate = 10000   // 最高优先级
-highQueue.processRate = 5000
-normalQueue.processRate = 2000  
-lowQueue.processRate = 500
+// 不同处理速度
+criticalQueue.processRate(10000);  // 最高优先级
+highQueue.processRate(5000);
+normalQueue.processRate(2000);
+lowQueue.processRate(500);
 ```
 
 #### 实战案例：秒杀系统削峰设计
@@ -427,18 +360,15 @@ lowQueue.processRate = 500
 - 99%的请求注定失败
 
 **传统设计问题：**
-```pseudocode
+```java
 function seckillProduct(productId, userId) {
-    // 所有请求直接查询数据库 - 数据库瞬间被压垮！
-    stock = database.getStock(productId)
+    stock = database.getStock(productId);  // 数据库瞬间被压垮
     
     if (stock > 0) {
-        // 并发修改库存，出现超卖
-        database.updateStock(productId, stock - 1)
-        return success("抢购成功")
-    } else {
-        return error("商品已售完")
+        database.updateStock(productId, stock - 1);  // 并发超卖
+        return "抢购成功";
     }
+    return "商品已售完";
 }
 ```
 
@@ -459,42 +389,31 @@ graph TB
     I --> J[用户通知]
 ```
 
-**实现代码：**
-```pseudocode
-// 1. 前端预检查，快速过滤无效请求
+**基于MQ的削峰设计：**
+```java
+// 1. 前端预检查，快速过滤
 function seckillRequest(productId, userId) {
-    // 快速检查：用户是否重复提交、活动是否开始等
     if (!preCheck(productId, userId)) {
-        return error("请求无效")
+        return "请求无效";
     }
     
-    // 将有效请求放入队列
-    seckillQueue.send({
-        productId: productId,
-        userId: userId,
-        timestamp: getCurrentTime()
-    })
-    
-    return success("请求已提交，请稍候查看结果")
+    // 放入队列异步处理
+    seckillQueue.send(new SeckillMessage(productId, userId));
+    return "请求已提交，请稍候查看结果";
 }
 
-// 2. 后端串行处理，避免并发问题
+// 2. 后端串行处理，避免并发
 function processSeckillQueue() {
-    while (true) {
-        message = seckillQueue.receive()
-        
-        // 使用Redis原子操作检查和扣减库存
-        remainingStock = redis.decrement("stock:" + message.productId)
-        
-        if (remainingStock >= 0) {
-            // 库存足够，创建订单
-            createOrder(message.productId, message.userId)
-            notifyUser(message.userId, "抢购成功")
-        } else {
-            // 库存不足，回滚操作
-            redis.increment("stock:" + message.productId)
-            notifyUser(message.userId, "商品已售完")
-        }
+    message = seckillQueue.receive();
+    
+    // Redis原子操作扣减库存
+    remainingStock = redis.decrement("stock:" + message.productId);
+    
+    if (remainingStock >= 0) {
+        createOrder(message.productId, message.userId);
+        notifyUser(message.userId, "抢购成功");
+    } else {
+        notifyUser(message.userId, "商品已售完");
     }
 }
 ```
@@ -531,102 +450,34 @@ redis-cli ping  # 应该返回 PONG
 
 ### 第一个消息队列程序
 
-#### 创建生产者（Producer）
+#### 创建生产者和消费者
 
-```pseudocode
-// producer.py - 消息生产者
-import redis
-import json
-import time
-
+```java
+// 生产者：发送消息
 class MessageProducer {
-    function __init__() {
-        this.redis_client = redis.Redis(host='localhost', port=6379, db=0)
-        this.queue_name = "my_first_queue"
-    }
-    
-    function sendMessage(message) {
-        // 将消息序列化并放入队列
-        message_data = {
-            "content": message,
-            "timestamp": getCurrentTime(),
-            "message_id": generateUniqueId()
-        }
-        
-        // 使用Redis的LIST数据结构作为队列
-        this.redis_client.lpush(this.queue_name, json.dumps(message_data))
-        
-        print("✅ 消息已发送: " + message)
+    public void sendMessage(String message) {
+        redis.lpush("my_queue", message);
+        System.out.println("✅ 消息已发送: " + message);
     }
 }
 
-// 使用示例
-producer = new MessageProducer()
-
-// 模拟发送不同类型的消息
-messages = [
-    "用户123下单成功",
-    "商品456库存不足",
-    "支付订单789完成"
-]
-
-for message in messages {
-    producer.sendMessage(message)
-    time.sleep(1)  // 间隔1秒发送
-}
-```
-
-#### 创建消费者（Consumer）
-
-```pseudocode
-// consumer.py - 消息消费者
-import redis
-import json
-import time
-
+// 消费者：处理消息  
 class MessageConsumer {
-    function __init__() {
-        this.redis_client = redis.Redis(host='localhost', port=6379, db=0)
-        this.queue_name = "my_first_queue"
-    }
-    
-    function processMessage(message_data) {
-        // 模拟消息处理逻辑
-        print("🔄 正在处理消息: " + message_data["content"])
-        
-        // 模拟处理时间
-        time.sleep(2)
-        
-        print("✅ 消息处理完成: " + message_data["message_id"])
-    }
-    
-    function startConsuming() {
-        print("📡 消费者启动，等待消息...")
-        
+    public void startConsuming() {
         while (true) {
-            // 阻塞式从队列右端取消息
-            result = this.redis_client.brpop(this.queue_name, timeout=5)
-            
-            if (result) {
-                queue_name, message_json = result
-                message_data = json.loads(message_json)
-                
-                try {
-                    this.processMessage(message_data)
-                } catch (exception) {
-                    print("❌ 消息处理失败: " + exception.message)
-                    // 可以选择重新放入队列或放入死信队列
-                }
-            } else {
-                print("⏰ 暂无消息，等待中...")
+            String message = redis.brpop("my_queue", 5);
+            if (message != null) {
+                processMessage(message);
             }
         }
     }
+    
+    private void processMessage(String message) {
+        System.out.println("🔄 处理消息: " + message);
+        // 业务处理逻辑
+        System.out.println("✅ 处理完成");
+    }
 }
-
-// 启动消费者
-consumer = new MessageConsumer()
-consumer.startConsuming()
 ```
 
 ### 运行你的第一个MQ系统
@@ -669,48 +520,24 @@ python producer.py
 
 让我们对比一下同步和异步的差别：
 
-#### 同步版本（体验卡顿）
-```pseudocode
+#### 同步 vs 异步对比
+
+```java
+// 同步版本：用户等待6秒
 function processOrderSync(orderInfo) {
-    startTime = getCurrentTime()
-    
-    print("开始处理订单...")
-    
-    // 串行处理，每个步骤都要等待
-    updateInventory(orderInfo)      // 等待2秒
-    sendEmail(orderInfo)            // 等待3秒  
-    recordLog(orderInfo)            // 等待1秒
-    
-    endTime = getCurrentTime()
-    print("订单处理完成，耗时: " + (endTime - startTime) + "秒")
-    
-    return "订单处理成功"
+    updateInventory(orderInfo);      // 等待2秒
+    sendEmail(orderInfo);            // 等待3秒  
+    recordLog(orderInfo);            // 等待1秒
+    return "订单处理成功";
 }
 
-result = processOrderSync(orderInfo)  // 用户等待6秒！
-print("用户看到结果: " + result)
-```
-
-#### 异步版本（体验秒响应）
-```pseudocode
+// 异步版本：用户等待0.015秒
 function processOrderAsync(orderInfo) {
-    startTime = getCurrentTime()
-    
-    print("开始处理订单...")
-    
-    // 异步发送消息，立即返回
-    messageQueue.send("inventory.update", orderInfo)   // 5ms
-    messageQueue.send("email.send", orderInfo)         // 5ms
-    messageQueue.send("log.record", orderInfo)         // 5ms
-    
-    endTime = getCurrentTime()
-    print("订单提交完成，耗时: " + (endTime - startTime) + "秒")
-    
-    return "订单提交成功，正在异步处理中"
+    messageQueue.send("inventory.update", orderInfo);   // 5ms
+    messageQueue.send("email.send", orderInfo);         // 5ms
+    messageQueue.send("log.record", orderInfo);         // 5ms
+    return "订单提交成功，正在异步处理中";
 }
-
-result = processOrderAsync(orderInfo)  // 用户等待0.015秒！
-print("用户看到结果: " + result)
 ```
 
 ### 进一步实验
