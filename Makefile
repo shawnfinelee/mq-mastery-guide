@@ -63,9 +63,22 @@ update-sidebar: ## 自动更新侧边栏导航
 	@echo "🔄 更新侧边栏导航..."
 	@echo "* [首页](README.md)" > _sidebar.md
 	@echo "* [目录](00.目录.md)" >> _sidebar.md
-	@ls 第*章*.md 2>/dev/null | sort | while read file; do \
-		title=$$(echo "$$file" | sed 's/\.md$$//'); \
-		echo "* [$$title]($$file)" >> _sidebar.md; \
+	@echo "" >> _sidebar.md
+	@echo "## 主要章节" >> _sidebar.md
+	@for i in 一 二 三 四 五 六 七 八 九; do \
+		file=$$(ls "第$${i}章"*.md 2>/dev/null | head -1); \
+		if [ -n "$$file" ]; then \
+			title=$$(echo "$$file" | sed 's/\.md$$//'); \
+			echo "* [$$title]($$file)" >> _sidebar.md; \
+		fi; \
+	done
+	@echo "" >> _sidebar.md
+	@echo "## 后续内容" >> _sidebar.md
+	@find . -name "后续*.md" -maxdepth 1 2>/dev/null | sort -V | while read file; do \
+		filename=$$(basename "$$file"); \
+		title=$$(echo "$$filename" | sed 's/\.md$$//'); \
+		encoded_filename=$$(echo "$$filename" | sed 's/ /%20/g'); \
+		echo "* [$$title]($$encoded_filename)" >> _sidebar.md; \
 	done || true
 	@echo "✅ 侧边栏导航已更新"
 

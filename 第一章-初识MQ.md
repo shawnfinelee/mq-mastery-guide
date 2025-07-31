@@ -38,13 +38,6 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph "传统同步调用"
-        A1[用户服务] --> A2[订单服务]
-        A2 --> A3[库存服务]
-        A3 --> A4[支付服务]
-        A4 --> A5[物流服务]
-    end
-    
     subgraph "引入消息队列后"
         B1[用户服务] --> B2[消息队列]
         B2 --> B3[订单服务]
@@ -52,18 +45,27 @@ graph TB
         B2 --> B5[支付服务]
         B2 --> B6[物流服务]
     end
+
+    subgraph "传统同步调用"
+        A1[用户服务] --> A2[订单服务]
+        A2 --> A3[库存服务]
+        A3 --> A4[支付服务]
+        A4 --> A5[物流服务]
+    end
+    
 ```
+> 思考：引入消息队列前后，系统发生了哪些变化？
 
 **消息队列的核心特征：**
 
 | 特征 | 说明 | 类比 |
 |------|------|------|
-| **异步处理** | 发送方不需要等待接收方处理完成 | 寄快递：寄出即可，不用等对方签收 |
-| **解耦合** | 发送方和接收方互不了解对方的存在 | 电子邮件：发件人不需要知道收件人何时查看 |
+| **异步处理** | 发送方不需要等待接收方处理完成 | 寄快递：寄出即可，不用等对方签收，可以先去忙别的事 |
+| **解耦合** | 发送方和接收方互不了解对方的存在 | 发通知：主干业务不需要关注通知发送的细节，即使发送任务失败，也不影响业务流程 |
 | **可靠传输** | 保证消息不会丢失 | 挂号信：有回执保证送达 |
 | **削峰填谷** | 缓冲突发流量 | 水库：调节水流量 |
 
-### 消息队列的基本工作原理
+### 消息队列的基本工作流程
 
 ```java
 // 生产者：发送订单消息
@@ -74,21 +76,25 @@ message = consumer.receive();
 processOrder(message.data);
 consumer.ack(message);  // 确认处理完成
 ```
-```
+
 
 ### 为什么需要消息队列？
 
 #### 问题1：系统耦合度高
+
+
 **传统做法：**
 ```java
 function createOrder(orderData) {
-    order = saveOrder(orderData);
-    updateInventory(order.productId, order.quantity);  // 故障影响整个流程
+    order = saveOrder(orderData); // 用户直接下单
+    updateIntent(order.accountId, order.assistantId);  // 更新用户意图，如果故障，会影响主干业务
     sendEmail(order.userEmail, "订单确认邮件");      // 邮件慢，用户等待
-    writeLog(order);
+    writeLog(order); // 记录日志，如果故障，会影响主干业务
     return order;
 }
 ```
+
+> 我不想等，也别让别人的错误影响我
 
 **引入MQ后：**
 ```java
@@ -99,8 +105,9 @@ function createOrder(orderData) {
 }
 
 // 各服务独立订阅
-inventoryService.subscribe("order.created", this::updateInventory);
+intentService.subscribe("order.created", this::updateIntent);
 emailService.subscribe("order.created", this::sendEmail);
+logService.subscribe("order.created", this::writeLog);
 ```
 
 #### 问题2：系统性能瓶颈
@@ -114,8 +121,7 @@ emailService.subscribe("order.created", this::sendEmail);
 - 瞬间涌入大量请求
 - 峰值是平时的10-100倍
 - 持续时间短但冲击力强
-
-没有缓冲机制，系统容易被瞬间压垮。
+- 没有缓冲机制，系统容易被瞬间压垮。
 
 ---
 
@@ -197,14 +203,26 @@ class InventoryService {
         reduceStock(order.items);
     }
 }
+@EventListener("order.created")
+class PaymentService {
+    public void handleOrderCreated(Order order) {
+        createPayment(order.amount);
+    }
+}
+@EventListener("order.created")
+class EmailService {
+    public void handleOrderCreated(Order order) {
+        sendConfirmation(order.userEmail);
+    }
+}
 ```
 
 ### ⚡ 异步：让系统响应如闪电
 
-#### 同步 vs 异步的本质区别
+#### 同步 vs 异步
 
-**同步调用：** 就像打电话，必须等对方接听并回复
-**异步调用：** 就像发短信，发出即可，对方随时回复
+- **同步调用：** 就像打电话，必须等对方接听并回复
+- **异步调用：** 就像发短信，发出即可，对方随时回复
 
 ```mermaid
 sequenceDiagram
@@ -242,16 +260,6 @@ sequenceDiagram
         MQ->>Server3: 消息C
     end
 ```
-
-#### 异步带来的性能提升
-
-**量化对比：**
-
-| 场景 | 同步模式 | 异步模式 | 性能提升 |
-|------|----------|----------|----------|
-| **响应时间** | 230ms | 10ms | **23倍** |
-| **并发处理能力** | 100 QPS | 1000 QPS | **10倍** |
-| **系统资源利用率** | 30% | 80% | **2.7倍** |
 
 #### 实战案例：用户注册流程优化
 
@@ -426,153 +434,6 @@ function processSeckillQueue() {
 | **处理准确性** | 出现超卖 | 库存精确控制 |
 | **用户体验** | 页面卡死 | 快速响应状态 |
 | **资源利用** | 瞬间耗尽 | 平稳可控 |
-
----
-
-## 1.3 5分钟搭建你的第一个MQ系统
-
-理论说得再多，不如动手实践！让我们用最简单的方式搭建一个消息队列系统，感受异步通信的魅力。
-
-### 环境准备
-
-我们选择Redis作为消息队列（简单易用，适合初学者）：
-
-```bash
-# 1. 安装Redis (以Ubuntu为例)
-sudo apt-get install redis-server
-
-# 2. 启动Redis
-redis-server
-
-# 3. 验证安装
-redis-cli ping  # 应该返回 PONG
-```
-
-### 第一个消息队列程序
-
-#### 创建生产者和消费者
-
-```java
-// 生产者：发送消息
-class MessageProducer {
-    public void sendMessage(String message) {
-        redis.lpush("my_queue", message);
-        System.out.println("✅ 消息已发送: " + message);
-    }
-}
-
-// 消费者：处理消息  
-class MessageConsumer {
-    public void startConsuming() {
-        while (true) {
-            String message = redis.brpop("my_queue", 5);
-            if (message != null) {
-                processMessage(message);
-            }
-        }
-    }
-    
-    private void processMessage(String message) {
-        System.out.println("🔄 处理消息: " + message);
-        // 业务处理逻辑
-        System.out.println("✅ 处理完成");
-    }
-}
-```
-
-### 运行你的第一个MQ系统
-
-**1. 启动消费者（Terminal 1）：**
-```bash
-python consumer.py
-```
-输出：
-```
-📡 消费者启动，等待消息...
-⏰ 暂无消息，等待中...
-```
-
-**2. 启动生产者（Terminal 2）：**
-```bash
-python producer.py
-```
-输出：
-```
-✅ 消息已发送: 用户123下单成功
-✅ 消息已发送: 商品456库存不足  
-✅ 消息已发送: 支付订单789完成
-```
-
-**3. 观察消费者处理过程：**
-```
-🔄 正在处理消息: 用户123下单成功
-✅ 消息处理完成: msg_001
-🔄 正在处理消息: 商品456库存不足
-✅ 消息处理完成: msg_002
-🔄 正在处理消息: 支付订单789完成
-✅ 消息处理完成: msg_003
-⏰ 暂无消息，等待中...
-```
-
-🎉 **恭喜！你的第一个消息队列系统成功运行了！**
-
-### 体验异步魅力
-
-让我们对比一下同步和异步的差别：
-
-#### 同步 vs 异步对比
-
-```java
-// 同步版本：用户等待6秒
-function processOrderSync(orderInfo) {
-    updateInventory(orderInfo);      // 等待2秒
-    sendEmail(orderInfo);            // 等待3秒  
-    recordLog(orderInfo);            // 等待1秒
-    return "订单处理成功";
-}
-
-// 异步版本：用户等待0.015秒
-function processOrderAsync(orderInfo) {
-    messageQueue.send("inventory.update", orderInfo);   // 5ms
-    messageQueue.send("email.send", orderInfo);         // 5ms
-    messageQueue.send("log.record", orderInfo);         // 5ms
-    return "订单提交成功，正在异步处理中";
-}
-```
-
-### 进一步实验
-
-现在你可以尝试：
-
-**1. 多消费者并行处理：**
-```bash
-# 同时启动3个消费者实例
-python consumer.py &   # 后台运行
-python consumer.py &   
-python consumer.py &   
-
-# 发送大量消息测试
-python producer_batch.py  # 发送100条消息
-```
-
-**2. 观察负载均衡效果：**
-每个消费者会处理不同的消息，实现天然的负载均衡。
-
-**3. 模拟消费者故障：**
-```bash
-# Ctrl+C 杀死一个消费者
-# 观察其他消费者继续处理消息
-```
-
-### 这个简单例子展示了什么？
-
-通过这个5分钟的实验，你亲身体验了：
-
-✅ **解耦**：生产者和消费者独立运行，互不影响  
-✅ **异步**：生产者发送消息后立即返回，不等待处理完成  
-✅ **削峰**：消息先存储在队列中，消费者按自己的节奏处理  
-✅ **可靠性**：Redis持久化保证消息不丢失  
-✅ **扩展性**：可以随时增加消费者实例
 
 ---
 
